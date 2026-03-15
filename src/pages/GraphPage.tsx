@@ -721,6 +721,65 @@ function LabelsOverlay({
 
 // ── Post Preview Panel ────────────────────────────────────────────────
 
+// ── Threaded Comment ──────────────────────────────────────────────────
+
+interface ThreadedCommentItem {
+  id: string;
+  author: string;
+  body: string;
+  score: number;
+  isTarget?: boolean;
+  replies: ThreadedCommentItem[];
+}
+
+function ThreadedComment({
+  comment,
+  depth = 0,
+  targetId,
+}: {
+  comment: ThreadedCommentItem;
+  depth?: number;
+  targetId?: string;
+}) {
+  const hasReplies = comment.replies.length > 0;
+  const [collapsed, setCollapsed] = useState(false);
+  const isTarget = comment.isTarget || comment.id === targetId;
+
+  return (
+    <div
+      className={`graph-embed-comment ${isTarget ? "graph-embed-comment--target" : ""}`}
+    >
+      <div className="graph-embed-comment-head">
+        {hasReplies && (
+          <button
+            className="graph-thread-toggle"
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            {collapsed ? "▸" : "▾"}
+          </button>
+        )}
+        u/{comment.author}
+        <span className="graph-preview-comment-score">
+          {comment.score} pts
+        </span>
+      </div>
+      <div className="graph-embed-comment-body">{comment.body}</div>
+      {hasReplies && !collapsed && (
+        <div className="graph-thread-replies">
+          {comment.replies.map((r) => (
+            <ThreadedComment
+              key={r.id}
+              comment={r}
+              depth={depth + 1}
+              targetId={targetId}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PostPreviewPanel({
   post,
   comments,
@@ -821,15 +880,7 @@ function PostPreviewPanel({
           {comments.length > 0 && (
             <div className="graph-preview-comments">
               {comments.slice(0, 5).map((c) => (
-                <div key={c.id} className="graph-preview-comment">
-                  <div className="graph-preview-comment-head">
-                    <span>u/{c.author}</span>
-                    <span className="graph-preview-comment-score">
-                      {c.score} pts
-                    </span>
-                  </div>
-                  <div className="graph-preview-comment-body">{c.body}</div>
-                </div>
+                <ThreadedComment key={c.id} comment={c} />
               ))}
             </div>
           )}
@@ -911,7 +962,7 @@ export function GraphPage() {
     imageUrl: string | null;
     videoUrl: string | null;
     galleryUrls: string[];
-    comments: { author: string; body: string; score: number; isTarget: boolean }[];
+    comments: ThreadedCommentItem[];
   } | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [loggedIn, setLoggedIn] = useState(() => auth.isLoggedIn());
@@ -1151,14 +1202,23 @@ export function GraphPage() {
           .then((data) => {
             const postData = data[0]?.data?.children?.[0]?.data;
             const rawComments = data[1]?.data?.children ?? [];
-            const comments = rawComments
-              .filter((c: { kind: string }) => c.kind === "t1")
-              .map((c: { data: { author: string; body: string; score: number; id: string } }) => ({
-                author: c.data.author ?? "",
-                body: c.data.body ?? "",
-                score: c.data.score ?? 0,
-                isTarget: c.data.id === commentId,
-              }));
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            function mapComments(children: any[]): ThreadedCommentItem[] {
+              return children
+                .filter((c: { kind: string }) => c.kind === "t1")
+                .map((c: { data: any }) => ({
+                  id: c.data.id ?? "",
+                  author: c.data.author ?? "",
+                  body: c.data.body ?? "",
+                  score: c.data.score ?? 0,
+                  isTarget: c.data.id === commentId,
+                  replies:
+                    c.data.replies?.data?.children
+                      ? mapComments(c.data.replies.data.children)
+                      : [],
+                }));
+            }
+            const comments = mapComments(rawComments);
 
             // Extract media
             let imageUrl: string | null = null;
@@ -1221,7 +1281,7 @@ export function GraphPage() {
               imageUrl: null,
               videoUrl: null,
               galleryUrls: [],
-              comments: [{ author: node.label, body: "(Could not load)", score: node.score ?? 0, isTarget: true }],
+              comments: [{ id: "error", author: node.label, body: "(Could not load)", score: node.score ?? 0, isTarget: true, replies: [] }],
             });
           });
       }
@@ -1659,19 +1719,8 @@ export function GraphPage() {
                 </a>
               )}
               <div className="graph-embed-comments-list">
-                {embedData.comments.map((c, i) => (
-                  <div
-                    key={i}
-                    className={`graph-embed-comment ${c.isTarget ? "graph-embed-comment--target" : ""}`}
-                  >
-                    <div className="graph-embed-comment-head">
-                      u/{c.author}
-                      <span className="graph-preview-comment-score">
-                        {c.score} pts
-                      </span>
-                    </div>
-                    <div className="graph-embed-comment-body">{c.body}</div>
-                  </div>
+                {embedData.comments.map((c) => (
+                  <ThreadedComment key={c.id} comment={c} />
                 ))}
               </div>
             </div>

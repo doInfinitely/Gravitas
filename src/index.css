@@ -695,6 +695,29 @@ a {
   white-space: pre-wrap;
 }
 
+/* ── Threaded Comments ── */
+
+.graph-thread-replies {
+  margin-left: 1rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  padding-left: 0.5rem;
+}
+
+.graph-thread-toggle {
+  display: inline;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.graph-thread-toggle:hover {
+  color: var(--color-text-secondary);
+}
+
 /* ── Controls Help ── */
 
 .graph-controls-help {
