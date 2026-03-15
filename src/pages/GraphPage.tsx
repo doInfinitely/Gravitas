@@ -748,7 +748,10 @@ function ThreadedComment({
 
   useEffect(() => {
     if (isTarget && ref.current) {
-      ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      const el = ref.current;
+      requestAnimationFrame(() =>
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+      );
     }
   }, [isTarget]);
 
@@ -1195,6 +1198,7 @@ export function GraphPage() {
         setEmbedUrl(node.permalink);
         setEmbedData(null);
         setSelectedPost(null);
+        setEmbedCollapsed(false);
         // Fetch full thread context
         const cleanPath = node.permalink.replace(/\/+$/, "");
         const commentId = node.id.replace("comment-", "");
