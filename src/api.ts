@@ -1,6 +1,190 @@
 // ── Reddit JSON API (no auth required for reading public data) ──────
 
 const REDDIT_BASE = "https://www.reddit.com";
+const OAUTH_BASE = "https://oauth.reddit.com";
+
+// ── Reddit OAuth2 ───────────────────────────────────────────────────
+
+const CLIENT_ID = import.meta.env.VITE_REDDIT_CLIENT_ID ?? "";
+const REDIRECT_URI = `${window.location.origin}/auth/callback`;
+const SCOPES = "identity read submit";
+const TOKEN_KEY = "gravitas_reddit_token";
+const STATE_KEY = "gravitas_oauth_state";
+
+interface TokenData {
+  access_token: string;
+  refresh_token?: string;
+  expires_at: number;
+}
+
+function getStoredToken(): TokenData | null {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeToken(data: TokenData): void {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(data));
+}
+
+function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+async function exchangeCode(code: string): Promise<TokenData> {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT_URI,
+  });
+  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${CLIENT_ID}:`)}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  if (!res.ok) throw new Error(`Token exchange failed: ${res.status}`);
+  const json = await res.json();
+  const token: TokenData = {
+    access_token: json.access_token,
+    refresh_token: json.refresh_token,
+    expires_at: Date.now() + json.expires_in * 1000,
+  };
+  storeToken(token);
+  return token;
+}
+
+async function refreshAccessToken(): Promise<TokenData | null> {
+  const stored = getStoredToken();
+  if (!stored?.refresh_token) return null;
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: stored.refresh_token,
+  });
+  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(`${CLIENT_ID}:`)}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  if (!res.ok) {
+    clearToken();
+    return null;
+  }
+  const json = await res.json();
+  const token: TokenData = {
+    access_token: json.access_token,
+    refresh_token: json.refresh_token ?? stored.refresh_token,
+    expires_at: Date.now() + json.expires_in * 1000,
+  };
+  storeToken(token);
+  return token;
+}
+
+async function getValidToken(): Promise<string | null> {
+  let token = getStoredToken();
+  if (!token) return null;
+  if (Date.now() > token.expires_at - 60_000) {
+    token = await refreshAccessToken();
+  }
+  return token?.access_token ?? null;
+}
+
+async function oauthFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const accessToken = await getValidToken();
+  if (!accessToken) throw new Error("Not authenticated");
+  const res = await fetch(`${OAUTH_BASE}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) throw new Error(`OAuth API error: ${res.status}`);
+  return res.json();
+}
+
+export interface RedditUser {
+  name: string;
+  icon_img: string;
+  total_karma: number;
+}
+
+export const auth = {
+  login(): void {
+    const state = crypto.randomUUID();
+    sessionStorage.setItem(STATE_KEY, state);
+    const params = new URLSearchParams({
+      client_id: CLIENT_ID,
+      response_type: "code",
+      state,
+      redirect_uri: REDIRECT_URI,
+      duration: "permanent",
+      scope: SCOPES,
+    });
+    window.location.href = `https://www.reddit.com/api/v1/authorize?${params}`;
+  },
+
+  async handleCallback(): Promise<boolean> {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    const savedState = sessionStorage.getItem(STATE_KEY);
+    sessionStorage.removeItem(STATE_KEY);
+
+    if (!code || !state || state !== savedState) return false;
+    await exchangeCode(code);
+    window.history.replaceState({}, "", "/");
+    return true;
+  },
+
+  logout(): void {
+    clearToken();
+  },
+
+  isLoggedIn(): boolean {
+    return getStoredToken() !== null;
+  },
+
+  async getUser(): Promise<RedditUser> {
+    return oauthFetch<RedditUser>("/api/v1/me");
+  },
+};
+
+export const post = {
+  async submit(sr: string, title: string, text: string): Promise<void> {
+    await oauthFetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        api_type: "json",
+        kind: "self",
+        sr,
+        title,
+        text,
+      }),
+    });
+  },
+
+  async comment(thingId: string, text: string): Promise<void> {
+    await oauthFetch("/api/comment", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        api_type: "json",
+        thing_id: thingId,
+        text,
+      }),
+    });
+  },
+};
 
 export interface RedditPost {
   id: string;

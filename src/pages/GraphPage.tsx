@@ -7,14 +7,19 @@ import React, {
   type MutableRefObject,
 } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Text, Stars } from "@react-three/drei";
-import { EffectComposer, Bloom } from "@react-three/postprocessing";
+import { OrbitControls, Stars } from "@react-three/drei";
+import { useThree } from "@react-three/fiber";
+import { EffectComposer, Bloom, ToneMapping } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
 import {
   reddit,
+  auth,
+  post as postApi,
   getSavedSubreddits,
   saveSubreddits,
   type RedditComment,
+  type RedditUser,
 } from "../api";
 
 // ── Error Boundary ────────────────────────────────────────────────────
@@ -133,6 +138,9 @@ interface GraphPost {
   score: number;
   numComments: number;
   permalink: string;
+  selftext: string;
+  url: string;
+  isSelf: boolean;
 }
 
 interface Ping {
@@ -325,18 +333,14 @@ const SHARED_GEOM = {
 // ── 3D Components ─────────────────────────────────────────────────────
 
 function NodeVisual({
-  size,
   color,
   emissiveColor,
-  label,
   onClick,
   expanded,
   nodeType,
 }: {
-  size: number;
   color: string;
   emissiveColor: string;
-  label: string;
   onClick: () => void;
   expanded: boolean;
   nodeType: "subreddit" | "post" | "comment";
@@ -388,25 +392,11 @@ function NodeVisual({
         <meshStandardMaterial
           color={color}
           emissive={emissiveColor}
-          emissiveIntensity={hovered ? 0.8 : expanded ? 0.55 : 0.35}
-          roughness={0.25}
-          metalness={0.6}
-          toneMapped={false}
+          emissiveIntensity={hovered ? 2.4 : expanded ? 1.8 : 1.6}
+          roughness={0.2}
+          metalness={0.4}
         />
       </mesh>
-      <group position={[0, size + 0.45, 0]}>
-        <Text
-          fontSize={size * 0.5}
-          color="#e4e4e7"
-          anchorX="center"
-          anchorY="bottom"
-          maxWidth={6}
-          outlineWidth={0.02}
-          outlineColor="#000"
-        >
-          {label}
-        </Text>
-      </group>
     </>
   );
 }
@@ -495,8 +485,10 @@ function PingRing({
   return (
     <mesh ref={ref} rotation={[-Math.PI / 2, 0, 0]}>
       <ringGeometry args={[0.6, 0.75, 32]} />
-      <meshBasicMaterial
+      <meshStandardMaterial
         color={PAL.pingNew}
+        emissive={PAL.pingNew}
+        emissiveIntensity={0.8}
         transparent
         opacity={0.7}
         side={THREE.DoubleSide}
@@ -593,13 +585,6 @@ function ForceGraph({
             }}
           >
             <NodeVisual
-              size={
-                n.type === "subreddit"
-                  ? 0.9
-                  : n.type === "post"
-                    ? 0.55
-                    : 0.3
-              }
               color={
                 n.type === "subreddit"
                   ? PAL.sub
@@ -614,7 +599,6 @@ function ForceGraph({
                     ? PAL.postEmit
                     : PAL.commentEmit
               }
-              label={n.label}
               onClick={() => onNodeClick(n)}
               expanded={isExpanded}
               nodeType={n.type}
@@ -632,13 +616,14 @@ function ForceGraph({
         />
       ))}
 
-      <EffectComposer>
+      <EffectComposer multisampling={0} stencilBuffer={false}>
         <Bloom
-          luminanceThreshold={0.15}
-          luminanceSmoothing={0.9}
-          intensity={0.6}
+          luminanceThreshold={0.1}
+          luminanceSmoothing={0.95}
+          intensity={0.8}
           mipmapBlur
         />
+        <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
       </EffectComposer>
     </>
   );
@@ -655,33 +640,208 @@ function ClockSync() {
   return null;
 }
 
-// ── Post Detail Panel ─────────────────────────────────────────────────
+// ── Label Projector (runs inside Canvas, writes screen coords) ────────
 
-function PostDetailPanel({
+interface LabelScreenPos {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  visible: boolean;
+}
+
+function LabelProjector({
+  simRef,
+  graphNodes,
+  labelsRef,
+}: {
+  simRef: MutableRefObject<SimState>;
+  graphNodes: GNodeData[];
+  labelsRef: MutableRefObject<LabelScreenPos[]>;
+}) {
+  const { camera, size } = useThree();
+  const _v3 = useRef(new THREE.Vector3());
+
+  useFrame(() => {
+    const result: LabelScreenPos[] = [];
+    for (const n of graphNodes) {
+      const sn = simRef.current.nodes.get(n.id);
+      if (!sn) continue;
+      const nodeSize = n.type === "subreddit" ? 0.9 : n.type === "post" ? 0.55 : 0.3;
+      _v3.current.set(sn.x, sn.y + nodeSize + 0.5, sn.z);
+      _v3.current.project(camera);
+      const x = (_v3.current.x * 0.5 + 0.5) * size.width;
+      const y = (-_v3.current.y * 0.5 + 0.5) * size.height;
+      const visible = _v3.current.z < 1;
+      result.push({ id: n.id, label: n.label, x, y, visible });
+    }
+    labelsRef.current = result;
+  });
+
+  return null;
+}
+
+function LabelsOverlay({
+  labelsRef,
+}: {
+  labelsRef: MutableRefObject<LabelScreenPos[]>;
+}) {
+  const [positions, setPositions] = useState<LabelScreenPos[]>([]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPositions([...labelsRef.current]);
+    }, 1000 / 30); // 30fps update for labels
+    return () => clearInterval(id);
+  }, [labelsRef]);
+
+  return (
+    <div className="graph-labels-overlay">
+      {positions.map(
+        (p) =>
+          p.visible && (
+            <div
+              key={p.id}
+              className="graph-node-label"
+              style={{
+                left: p.x,
+                top: p.y,
+              }}
+            >
+              {p.label}
+            </div>
+          )
+      )}
+    </div>
+  );
+}
+
+// ── Post Preview Panel ────────────────────────────────────────────────
+
+function PostPreviewPanel({
   post,
+  comments,
   onClose,
   onOpenReddit,
+  isLoggedIn,
+  onReply,
 }: {
   post: GraphPost;
+  comments: RedditComment[];
   onClose: () => void;
   onOpenReddit: () => void;
+  isLoggedIn: boolean;
+  onReply: (thingId: string, text: string) => void;
 }) {
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const handleSubmitReply = async () => {
+    if (!replyText.trim() || !replyTo) return;
+    setSending(true);
+    try {
+      onReply(replyTo, replyText);
+      setReplyTo(null);
+      setReplyText("");
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
-    <div className="graph-detail-panel">
-      <button className="graph-detail-close" onClick={onClose}>
-        &times;
-      </button>
-      <h4 className="graph-detail-title">{post.title}</h4>
-      <div className="graph-detail-meta">
-        <span>u/{post.author}</span>
-        <span>&middot;</span>
-        <span>{post.score} pts</span>
-        <span>&middot;</span>
-        <span>{post.numComments} comments</span>
+    <div className={`graph-preview-panel ${collapsed ? "graph-preview-panel--collapsed" : ""}`}>
+      <div className="graph-preview-header">
+        <h4 className="graph-detail-title">{post.title}</h4>
+        <div className="graph-preview-header-btns">
+          <button
+            className="graph-preview-collapse-btn"
+            onClick={() => setCollapsed((c) => !c)}
+          >
+            {collapsed ? "\u25B2" : "\u25BC"}
+          </button>
+          <button className="graph-detail-close" onClick={onClose}>
+            &times;
+          </button>
+        </div>
       </div>
-      <button className="graph-detail-reddit-btn" onClick={onOpenReddit}>
-        Open on Reddit
-      </button>
+      {!collapsed && (
+        <div className="graph-preview-content">
+          <div className="graph-detail-meta">
+            <span>u/{post.author}</span>
+            <span>&middot;</span>
+            <span>{post.score} pts</span>
+            <span>&middot;</span>
+            <span>{post.numComments} comments</span>
+          </div>
+
+          {post.selftext && (
+            <div className="graph-preview-body">{post.selftext}</div>
+          )}
+          {post.url && !post.isSelf && (
+            <a
+              className="graph-preview-link"
+              href={post.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {post.url}
+            </a>
+          )}
+
+          {comments.length > 0 && (
+            <div className="graph-preview-comments">
+              {comments.slice(0, 5).map((c) => (
+                <div key={c.id} className="graph-preview-comment">
+                  <div className="graph-preview-comment-head">
+                    <span>u/{c.author}</span>
+                    <span className="graph-preview-comment-score">
+                      {c.score} pts
+                    </span>
+                  </div>
+                  <div className="graph-preview-comment-body">{c.body}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="graph-preview-actions">
+            <button className="graph-detail-reddit-btn" onClick={onOpenReddit}>
+              Open on Reddit
+            </button>
+            {isLoggedIn && (
+              <button
+                className="graph-preview-reply-btn"
+                onClick={() =>
+                  setReplyTo(replyTo ? null : `t3_${post.redditId}`)
+                }
+              >
+                {replyTo ? "Cancel" : "Reply"}
+              </button>
+            )}
+          </div>
+
+          {replyTo && (
+            <div className="graph-preview-reply-form">
+              <textarea
+                className="graph-preview-reply-input"
+                placeholder="Write a comment..."
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                rows={3}
+              />
+              <button
+                className="graph-detail-reddit-btn"
+                onClick={handleSubmitReply}
+                disabled={sending || !replyText.trim()}
+              >
+                {sending ? "Sending..." : "Submit"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -709,9 +869,42 @@ export function GraphPage() {
   >({});
   const [pings, setPings] = useState<Ping[]>([]);
   const [selectedPost, setSelectedPost] = useState<GraphPost | null>(null);
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const [embedData, setEmbedData] = useState<{
+    postTitle: string;
+    postAuthor: string;
+    postScore: number;
+    postSelftext: string;
+    postUrl: string;
+    postIsSelf: boolean;
+    subreddit: string;
+    permalink: string;
+    imageUrl: string | null;
+    videoUrl: string | null;
+    galleryUrls: string[];
+    comments: { author: string; body: string; score: number; isTarget: boolean }[];
+  } | null>(null);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(() => auth.isLoggedIn());
+  const [redditUser, setRedditUser] = useState<RedditUser | null>(null);
+
+  // Handle OAuth callback on mount
+  useEffect(() => {
+    if (window.location.search.includes("code=")) {
+      auth.handleCallback().then((ok) => {
+        if (ok) {
+          setLoggedIn(true);
+          auth.getUser().then(setRedditUser).catch(() => {});
+        }
+      });
+    } else if (loggedIn) {
+      auth.getUser().then(setRedditUser).catch(() => {});
+    }
+  }, []);
 
   // Simulation state
   const simRef = useRef<SimState>({ nodes: new Map(), edges: [] });
+  const labelsRef = useRef<LabelScreenPos[]>([]);
 
   // Persist subscriptions
   useEffect(() => {
@@ -779,6 +972,9 @@ export function GraphPage() {
         score: p.score,
         numComments: p.num_comments,
         permalink: p.permalink,
+        selftext: p.selftext,
+        url: p.url,
+        isSelf: p.is_self,
       }));
       setPostsBySub((prev) => ({ ...prev, [name]: gp }));
 
@@ -890,7 +1086,97 @@ export function GraphPage() {
           setSelectedPost(gp);
         }
       } else if (node.type === "comment" && node.permalink) {
-        window.open(`https://reddit.com${node.permalink}`, "_blank");
+        setEmbedUrl(node.permalink);
+        setEmbedData(null);
+        setSelectedPost(null);
+        // Fetch full thread context
+        const cleanPath = node.permalink.replace(/\/+$/, "");
+        const commentId = node.id.replace("comment-", "");
+        // Go up to the post level to get full context
+        const postPath = cleanPath.split("/").slice(0, 6).join("/");
+        fetch(`https://www.reddit.com${postPath}.json?raw_json=1&limit=50`, {
+          headers: { Accept: "application/json" },
+        })
+          .then((r) => {
+            if (!r.ok) throw new Error(`${r.status}`);
+            return r.json();
+          })
+          .then((data) => {
+            const postData = data[0]?.data?.children?.[0]?.data;
+            const rawComments = data[1]?.data?.children ?? [];
+            const comments = rawComments
+              .filter((c: { kind: string }) => c.kind === "t1")
+              .map((c: { data: { author: string; body: string; score: number; id: string } }) => ({
+                author: c.data.author ?? "",
+                body: c.data.body ?? "",
+                score: c.data.score ?? 0,
+                isTarget: c.data.id === commentId,
+              }));
+
+            // Extract media
+            let imageUrl: string | null = null;
+            let videoUrl: string | null = null;
+            const galleryUrls: string[] = [];
+
+            if (postData) {
+              const url = postData.url ?? "";
+              // Direct image link
+              if (/\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(url)) {
+                imageUrl = url;
+              }
+              // Reddit preview image
+              if (!imageUrl && postData.preview?.images?.[0]?.source?.url) {
+                imageUrl = postData.preview.images[0].source.url;
+              }
+              // Reddit hosted video
+              if (postData.media?.reddit_video?.fallback_url) {
+                videoUrl = postData.media.reddit_video.fallback_url;
+              }
+              // v.redd.it URL
+              if (!videoUrl && postData.is_video && url.includes("v.redd.it")) {
+                videoUrl = `${url}/DASH_720.mp4`;
+              }
+              // Gallery
+              if (postData.media_metadata) {
+                for (const item of Object.values(postData.media_metadata) as { s?: { u?: string }; status?: string }[]) {
+                  if (item.status === "valid" && item.s?.u) {
+                    galleryUrls.push(item.s.u);
+                  }
+                }
+              }
+            }
+
+            setEmbedData({
+              postTitle: postData?.title ?? "",
+              postAuthor: postData?.author ?? "",
+              postScore: postData?.score ?? 0,
+              postSelftext: postData?.selftext ?? "",
+              postUrl: postData?.url ?? "",
+              postIsSelf: postData?.is_self ?? true,
+              subreddit: postData?.subreddit ?? "",
+              permalink: node.permalink!,
+              imageUrl,
+              videoUrl,
+              galleryUrls,
+              comments,
+            });
+          })
+          .catch(() => {
+            setEmbedData({
+              postTitle: "",
+              postAuthor: "",
+              postScore: 0,
+              postSelftext: "",
+              postUrl: "",
+              postIsSelf: true,
+              subreddit: node.subName ?? "",
+              permalink: node.permalink!,
+              imageUrl: null,
+              videoUrl: null,
+              galleryUrls: [],
+              comments: [{ author: node.label, body: "(Could not load)", score: node.score ?? 0, isTarget: true }],
+            });
+          });
       }
     },
     [toggleSub, togglePost, postsBySub]
@@ -968,6 +1254,22 @@ export function GraphPage() {
     return String(n);
   };
 
+  const handleReply = useCallback(
+    async (thingId: string, text: string) => {
+      try {
+        await postApi.comment(thingId, text);
+      } catch (err) {
+        console.error("Failed to post comment:", err);
+      }
+    },
+    []
+  );
+
+  // Comments for selected post
+  const selectedPostComments = selectedPost
+    ? commentsByPost[selectedPost.key] ?? []
+    : [];
+
   return (
     <div className="graph-page">
       <GraphErrorBoundary>
@@ -981,8 +1283,7 @@ export function GraphPage() {
           }}
           onCreated={({ gl }) => {
             gl.setClearColor(PAL.bg);
-            gl.toneMapping = THREE.ACESFilmicToneMapping;
-            gl.toneMappingExposure = 1.2;
+            gl.toneMapping = THREE.NoToneMapping;
             const canvas = gl.domElement;
             canvas.addEventListener("webglcontextlost", (e) => {
               e.preventDefault();
@@ -993,6 +1294,7 @@ export function GraphPage() {
           }}
         >
           <ClockSync />
+          <LabelProjector simRef={simRef} graphNodes={graphNodes} labelsRef={labelsRef} />
           <ForceGraph
             graphNodes={graphNodes}
             pings={pings}
@@ -1004,161 +1306,217 @@ export function GraphPage() {
         </Canvas>
       </GraphErrorBoundary>
 
-      {/* Overlay UI */}
-      <div className="graph-overlay">
-        <div className="graph-panel">
-          <h3 className="graph-panel-title">Gravitas</h3>
-          <p className="graph-panel-hint">
-            Subscribe to subreddits to watch them live. Click nodes to expand.
-            Scroll to zoom, drag to orbit.
-          </p>
-          <div className="graph-stats">
-            <span className="graph-stat">
-              <span
-                className="graph-stat-dot"
-                style={{ background: PAL.sub }}
-              />
-              {stats.subreddits} subreddits
-            </span>
-            <span className="graph-stat">
-              <span
-                className="graph-stat-dot"
-                style={{ background: PAL.post }}
-              />
-              {stats.posts} posts
-            </span>
-            <span className="graph-stat">
-              <span
-                className="graph-stat-dot"
-                style={{ background: PAL.comment }}
-              />
-              {stats.comments} comments
-            </span>
-          </div>
-        </div>
+      {/* Projected labels (pure DOM, no WebGL interaction) */}
+      <LabelsOverlay labelsRef={labelsRef} />
 
-        {/* Subreddit search + subscribe */}
-        <div className="graph-picker">
-          <div className="graph-picker-header">
-            <input
-              className="graph-picker-search"
-              type="text"
-              placeholder="Search subreddits to subscribe..."
-              value={subSearch}
-              onChange={(e) => setSubSearch(e.target.value)}
-            />
-          </div>
+      {/* Collapsible overlay UI */}
+      <div
+        className={`graph-overlay ${panelCollapsed ? "graph-overlay--collapsed" : ""}`}
+      >
+        <button
+          className="graph-collapse-btn"
+          onClick={() => setPanelCollapsed((p) => !p)}
+        >
+          {panelCollapsed ? "\u00BB" : "\u00AB"}
+        </button>
 
-          {/* Search results */}
-          {(searchResults.length > 0 || searching) && (
-            <div className="graph-picker-list graph-search-results">
-              {searching && (
-                <div className="graph-picker-empty">Searching...</div>
-              )}
-              {searchResults.map((r) => {
-                const alreadySubbed = subscribedSubs.includes(r.name);
-                return (
-                  <button
-                    key={r.name}
-                    className={`graph-picker-item ${alreadySubbed ? "active" : ""}`}
-                    onClick={() => !alreadySubbed && subscribe(r.name)}
-                    disabled={alreadySubbed}
-                  >
-                    <span
-                      className="graph-picker-dot"
-                      style={{
-                        background: alreadySubbed ? PAL.sub : "transparent",
-                      }}
-                    />
-                    <span style={{ flex: 1 }}>r/{r.name}</span>
-                    <span
-                      style={{
-                        fontSize: "0.7rem",
-                        color: "var(--color-text-muted)",
-                      }}
-                    >
-                      {formatSubs(r.subscribers)}
-                    </span>
-                  </button>
-                );
-              })}
+        <div className="graph-overlay-content">
+          <div className="graph-panel">
+            <h3 className="graph-panel-title">Gravitas</h3>
+            <p className="graph-panel-hint">
+              Subscribe to subreddits to watch them live. Click nodes to expand.
+            </p>
+            <div className="graph-stats">
+              <span className="graph-stat">
+                <span
+                  className="graph-stat-dot"
+                  style={{ background: PAL.sub }}
+                />
+                {stats.subreddits} subreddits
+              </span>
+              <span className="graph-stat">
+                <span
+                  className="graph-stat-dot"
+                  style={{ background: PAL.post }}
+                />
+                {stats.posts} posts
+              </span>
+              <span className="graph-stat">
+                <span
+                  className="graph-stat-dot"
+                  style={{ background: PAL.comment }}
+                />
+                {stats.comments} comments
+              </span>
             </div>
-          )}
 
-          {/* Subscribed list */}
-          {subscribedSubs.length > 0 && searchResults.length === 0 && (
-            <div className="graph-picker-list">
-              {subscribedSubs.map((name) => (
-                <div key={name} className="graph-picker-item active">
-                  <span
-                    className="graph-picker-dot"
-                    style={{ background: PAL.sub }}
-                  />
-                  <span
-                    style={{ flex: 1, cursor: "pointer" }}
-                    onClick={() => toggleSub(name)}
-                  >
-                    r/{name}
-                    {expandedSubs.has(name) && (
-                      <span
-                        style={{
-                          marginLeft: "0.3rem",
-                          fontSize: "0.65rem",
-                          color: PAL.post,
-                        }}
-                      >
-                        expanded
-                      </span>
-                    )}
+            {/* Auth button */}
+            <div className="graph-auth">
+              {loggedIn ? (
+                <div className="graph-auth-user">
+                  <span className="graph-auth-name">
+                    u/{redditUser?.name ?? "..."}
                   </span>
                   <button
-                    className="graph-unsub-btn"
-                    onClick={() => unsubscribe(name)}
-                    title="Unsubscribe"
+                    className="graph-auth-btn graph-auth-btn--logout"
+                    onClick={() => {
+                      auth.logout();
+                      setLoggedIn(false);
+                      setRedditUser(null);
+                    }}
                   >
-                    &times;
+                    Logout
                   </button>
                 </div>
-              ))}
+              ) : (
+                <button
+                  className="graph-auth-btn"
+                  onClick={() => auth.login()}
+                >
+                  Login with Reddit
+                </button>
+              )}
             </div>
-          )}
+          </div>
 
-          {subscribedSubs.length === 0 && searchResults.length === 0 && (
-            <div className="graph-picker-empty">
-              Search and subscribe to subreddits to get started
+          {/* Subreddit search + subscribe */}
+          <div className="graph-picker">
+            <div className="graph-picker-header">
+              <input
+                className="graph-picker-search"
+                type="text"
+                placeholder="Search subreddits to subscribe..."
+                value={subSearch}
+                onChange={(e) => setSubSearch(e.target.value)}
+              />
             </div>
-          )}
-        </div>
 
-        <div className="graph-legend">
-          <div className="graph-legend-row">
-            <span
-              className="graph-legend-swatch"
-              style={{ background: PAL.sub }}
-            />
-            Subreddit
+            {/* Search results */}
+            {(searchResults.length > 0 || searching) && (
+              <div className="graph-picker-list graph-search-results">
+                {searching && (
+                  <div className="graph-picker-empty">Searching...</div>
+                )}
+                {searchResults.map((r) => {
+                  const alreadySubbed = subscribedSubs.includes(r.name);
+                  return (
+                    <button
+                      key={r.name}
+                      className={`graph-picker-item ${alreadySubbed ? "active" : ""}`}
+                      onClick={() => !alreadySubbed && subscribe(r.name)}
+                      disabled={alreadySubbed}
+                    >
+                      <span
+                        className="graph-picker-dot"
+                        style={{
+                          background: alreadySubbed ? PAL.sub : "transparent",
+                        }}
+                      />
+                      <span style={{ flex: 1 }}>r/{r.name}</span>
+                      <span
+                        style={{
+                          fontSize: "0.7rem",
+                          color: "var(--color-text-muted)",
+                        }}
+                      >
+                        {formatSubs(r.subscribers)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Subscribed list */}
+            {subscribedSubs.length > 0 && searchResults.length === 0 && (
+              <div className="graph-picker-list">
+                {subscribedSubs.map((name) => (
+                  <div key={name} className="graph-picker-item active">
+                    <span
+                      className="graph-picker-dot"
+                      style={{ background: PAL.sub }}
+                    />
+                    <span
+                      style={{ flex: 1, cursor: "pointer" }}
+                      onClick={() => toggleSub(name)}
+                    >
+                      r/{name}
+                      {expandedSubs.has(name) && (
+                        <span
+                          style={{
+                            marginLeft: "0.3rem",
+                            fontSize: "0.65rem",
+                            color: PAL.post,
+                          }}
+                        >
+                          expanded
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      className="graph-unsub-btn"
+                      onClick={() => unsubscribe(name)}
+                      title="Unsubscribe"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {subscribedSubs.length === 0 && searchResults.length === 0 && (
+              <div className="graph-picker-empty">
+                Search and subscribe to subreddits to get started
+              </div>
+            )}
           </div>
-          <div className="graph-legend-row">
-            <span
-              className="graph-legend-swatch"
-              style={{ background: PAL.post }}
-            />
-            Post
+
+          <div className="graph-legend">
+            <div className="graph-legend-row">
+              <span
+                className="graph-legend-swatch"
+                style={{ background: PAL.sub }}
+              />
+              Subreddit
+            </div>
+            <div className="graph-legend-row">
+              <span
+                className="graph-legend-swatch"
+                style={{ background: PAL.post }}
+              />
+              Post
+            </div>
+            <div className="graph-legend-row">
+              <span
+                className="graph-legend-swatch"
+                style={{ background: PAL.comment }}
+              />
+              Comment
+            </div>
           </div>
-          <div className="graph-legend-row">
-            <span
-              className="graph-legend-swatch"
-              style={{ background: PAL.comment }}
-            />
-            Comment
-          </div>
+
         </div>
       </div>
 
-      {/* Post detail panel */}
-      {selectedPost && (
-        <PostDetailPanel
+      {/* Controls help */}
+      <div className="graph-controls-help">
+        <div className="graph-controls-row">
+          <kbd>Scroll</kbd> <span>Zoom</span>
+        </div>
+        <div className="graph-controls-row">
+          <kbd>Click + Drag</kbd> <span>Orbit</span>
+        </div>
+        <div className="graph-controls-row">
+          <kbd>Right-click + Drag</kbd> <span>Pan</span>
+        </div>
+      </div>
+
+      {/* Post preview panel */}
+      {selectedPost && !embedUrl && (
+        <PostPreviewPanel
           post={selectedPost}
+          comments={selectedPostComments}
           onClose={() => setSelectedPost(null)}
           onOpenReddit={() =>
             window.open(
@@ -1166,7 +1524,106 @@ export function GraphPage() {
               "_blank"
             )
           }
+          isLoggedIn={loggedIn}
+          onReply={handleReply}
         />
+      )}
+
+      {/* Comment detail panel */}
+      {embedUrl && (
+        <div className="graph-embed-panel">
+          <div className="graph-embed-header">
+            <button
+              className="graph-detail-close"
+              onClick={() => {
+                setEmbedUrl(null);
+                setEmbedData(null);
+              }}
+            >
+              &times;
+            </button>
+            <a
+              className="graph-embed-open"
+              href={`https://reddit.com${embedUrl}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Open on Reddit
+            </a>
+          </div>
+          {embedData ? (
+            <div className="graph-embed-content">
+              <div className="graph-embed-post-title">
+                {embedData.postTitle}
+              </div>
+              <div className="graph-embed-post-meta">
+                r/{embedData.subreddit} &middot; u/{embedData.postAuthor} &middot; {embedData.postScore} pts
+              </div>
+              {embedData.videoUrl && (
+                <video
+                  className="graph-embed-media"
+                  src={embedData.videoUrl}
+                  controls
+                  muted
+                  loop
+                  playsInline
+                />
+              )}
+              {!embedData.videoUrl && embedData.imageUrl && (
+                <img
+                  className="graph-embed-media"
+                  src={embedData.imageUrl}
+                  alt=""
+                  loading="lazy"
+                />
+              )}
+              {!embedData.videoUrl && !embedData.imageUrl && embedData.galleryUrls.length > 0 && (
+                <div className="graph-embed-gallery">
+                  {embedData.galleryUrls.map((url, i) => (
+                    <img
+                      key={i}
+                      className="graph-embed-media"
+                      src={url}
+                      alt=""
+                      loading="lazy"
+                    />
+                  ))}
+                </div>
+              )}
+              {embedData.postSelftext && (
+                <div className="graph-embed-selftext">{embedData.postSelftext}</div>
+              )}
+              {embedData.postUrl && !embedData.postIsSelf && !embedData.imageUrl && !embedData.videoUrl && (
+                <a
+                  className="graph-preview-link"
+                  href={embedData.postUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {embedData.postUrl}
+                </a>
+              )}
+              <div className="graph-embed-comments-list">
+                {embedData.comments.map((c, i) => (
+                  <div
+                    key={i}
+                    className={`graph-embed-comment ${c.isTarget ? "graph-embed-comment--target" : ""}`}
+                  >
+                    <div className="graph-embed-comment-head">
+                      u/{c.author}
+                      <span className="graph-preview-comment-score">
+                        {c.score} pts
+                      </span>
+                    </div>
+                    <div className="graph-embed-comment-body">{c.body}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="graph-picker-empty">Loading...</div>
+          )}
+        </div>
       )}
     </div>
   );
