@@ -976,6 +976,8 @@ export function GraphPage() {
           setLoggedIn(true);
           auth.getUser().then(setRedditUser).catch(() => {});
         }
+        // Clean OAuth params from URL
+        window.history.replaceState({}, "", window.location.pathname);
       });
     } else if (loggedIn) {
       auth.getUser().then(setRedditUser).catch(() => {});

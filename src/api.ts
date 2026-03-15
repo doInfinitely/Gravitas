@@ -6,7 +6,7 @@ const OAUTH_BASE = "https://oauth.reddit.com";
 // ── Reddit OAuth2 ───────────────────────────────────────────────────
 
 const CLIENT_ID = import.meta.env.VITE_REDDIT_CLIENT_ID ?? "";
-const REDIRECT_URI = `${window.location.origin}/auth/callback`;
+const REDIRECT_URI = window.location.origin;
 const SCOPES = "identity read submit";
 const TOKEN_KEY = "gravitas_reddit_token";
 const STATE_KEY = "gravitas_oauth_state";
