@@ -676,8 +676,10 @@ a {
 }
 
 .graph-embed-comment--target {
-  background: rgba(99, 102, 241, 0.12);
-  border-left: 2px solid var(--color-accent);
+  background: rgba(99, 102, 241, 0.18);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.15);
 }
 
 .graph-embed-comment-head {

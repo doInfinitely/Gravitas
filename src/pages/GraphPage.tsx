@@ -744,9 +744,17 @@ function ThreadedComment({
   const hasReplies = comment.replies.length > 0;
   const [collapsed, setCollapsed] = useState(false);
   const isTarget = comment.isTarget || comment.id === targetId;
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isTarget && ref.current) {
+      ref.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [isTarget]);
 
   return (
     <div
+      ref={ref}
       className={`graph-embed-comment ${isTarget ? "graph-embed-comment--target" : ""}`}
     >
       <div className="graph-embed-comment-head">
