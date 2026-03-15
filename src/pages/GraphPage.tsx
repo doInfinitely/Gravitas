@@ -141,6 +141,9 @@ interface GraphPost {
   selftext: string;
   url: string;
   isSelf: boolean;
+  imageUrl: string | null;
+  videoUrl: string | null;
+  galleryUrls: string[];
 }
 
 interface Ping {
@@ -776,10 +779,35 @@ function PostPreviewPanel({
             <span>{post.numComments} comments</span>
           </div>
 
+          {post.videoUrl && (
+            <video
+              className="graph-embed-media"
+              src={post.videoUrl}
+              controls
+              muted
+              loop
+              playsInline
+            />
+          )}
+          {!post.videoUrl && post.imageUrl && (
+            <img
+              className="graph-embed-media"
+              src={post.imageUrl}
+              alt=""
+              loading="lazy"
+            />
+          )}
+          {!post.videoUrl && !post.imageUrl && post.galleryUrls.length > 0 && (
+            <div className="graph-embed-gallery">
+              {post.galleryUrls.map((url, i) => (
+                <img key={i} className="graph-embed-media" src={url} alt="" loading="lazy" />
+              ))}
+            </div>
+          )}
           {post.selftext && (
             <div className="graph-preview-body">{post.selftext}</div>
           )}
-          {post.url && !post.isSelf && (
+          {post.url && !post.isSelf && !post.imageUrl && !post.videoUrl && (
             <a
               className="graph-preview-link"
               href={post.url}
@@ -963,19 +991,37 @@ export function GraphPage() {
   const fetchPostsForSub = useCallback(async (name: string) => {
     try {
       const posts = await reddit.getHot(name, MAX_POSTS);
-      const gp: GraphPost[] = posts.map((p) => ({
-        key: `${name}-${p.id}`,
-        redditId: p.id,
-        title: p.title,
-        subreddit: name,
-        author: p.author,
-        score: p.score,
-        numComments: p.num_comments,
-        permalink: p.permalink,
-        selftext: p.selftext,
-        url: p.url,
-        isSelf: p.is_self,
-      }));
+      const gp: GraphPost[] = posts.map((p) => {
+        let imageUrl: string | null = null;
+        let videoUrl: string | null = null;
+        const galleryUrls: string[] = [];
+        const url = p.url ?? "";
+        if (/\.(jpg|jpeg|png|gif|webp)(\?.*)?$/i.test(url)) imageUrl = url;
+        if (!imageUrl && p.preview?.images?.[0]?.source?.url) imageUrl = p.preview.images[0].source.url;
+        if (p.media?.reddit_video?.fallback_url) videoUrl = p.media.reddit_video.fallback_url;
+        if (!videoUrl && p.is_video && url.includes("v.redd.it")) videoUrl = `${url}/DASH_720.mp4`;
+        if (p.media_metadata) {
+          for (const item of Object.values(p.media_metadata)) {
+            if (item.status === "valid" && item.s?.u) galleryUrls.push(item.s.u);
+          }
+        }
+        return {
+          key: `${name}-${p.id}`,
+          redditId: p.id,
+          title: p.title,
+          subreddit: name,
+          author: p.author,
+          score: p.score,
+          numComments: p.num_comments,
+          permalink: p.permalink,
+          selftext: p.selftext,
+          url: p.url,
+          isSelf: p.is_self,
+          imageUrl,
+          videoUrl,
+          galleryUrls,
+        };
+      });
       setPostsBySub((prev) => ({ ...prev, [name]: gp }));
 
       // Add pings for new posts

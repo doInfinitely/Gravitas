@@ -203,6 +203,10 @@ export interface RedditPost {
   over_18: boolean;
   link_flair_text: string | null;
   thumbnail: string | null;
+  is_video: boolean;
+  preview?: { images?: { source?: { url: string } }[] };
+  media?: { reddit_video?: { fallback_url: string } };
+  media_metadata?: Record<string, { s?: { u?: string }; status?: string }>;
 }
 
 export interface RedditComment {
