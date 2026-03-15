@@ -739,7 +739,7 @@ function PostPreviewPanel({
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   const handleSubmitReply = async () => {
     if (!replyText.trim() || !replyTo) return;
@@ -898,6 +898,7 @@ export function GraphPage() {
   const [pings, setPings] = useState<Ping[]>([]);
   const [selectedPost, setSelectedPost] = useState<GraphPost | null>(null);
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const [embedCollapsed, setEmbedCollapsed] = useState(true);
   const [embedData, setEmbedData] = useState<{
     postTitle: string;
     postAuthor: string;
@@ -1577,17 +1578,25 @@ export function GraphPage() {
 
       {/* Comment detail panel */}
       {embedUrl && (
-        <div className="graph-embed-panel">
+        <div className={`graph-embed-panel ${embedCollapsed ? "graph-embed-panel--collapsed" : ""}`}>
           <div className="graph-embed-header">
-            <button
-              className="graph-detail-close"
-              onClick={() => {
-                setEmbedUrl(null);
-                setEmbedData(null);
-              }}
-            >
-              &times;
-            </button>
+            <div className="graph-preview-header-btns">
+              <button
+                className="graph-preview-collapse-btn"
+                onClick={() => setEmbedCollapsed((c) => !c)}
+              >
+                {embedCollapsed ? "\u25B2" : "\u25BC"}
+              </button>
+              <button
+                className="graph-detail-close"
+                onClick={() => {
+                  setEmbedUrl(null);
+                  setEmbedData(null);
+                }}
+              >
+                &times;
+              </button>
+            </div>
             <a
               className="graph-embed-open"
               href={`https://reddit.com${embedUrl}`}

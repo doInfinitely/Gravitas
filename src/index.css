@@ -583,6 +583,18 @@ a {
   pointer-events: auto;
 }
 
+.graph-embed-panel--collapsed {
+  bottom: auto;
+}
+
+.graph-embed-panel--collapsed .graph-embed-content {
+  display: none;
+}
+
+.graph-embed-panel--collapsed .graph-picker-empty {
+  display: none;
+}
+
 .graph-embed-header {
   display: flex;
   align-items: center;
