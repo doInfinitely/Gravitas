@@ -744,20 +744,9 @@ function ThreadedComment({
   const hasReplies = comment.replies.length > 0;
   const [collapsed, setCollapsed] = useState(false);
   const isTarget = comment.isTarget || comment.id === targetId;
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (isTarget && ref.current) {
-      const el = ref.current;
-      requestAnimationFrame(() =>
-        el.scrollIntoView({ behavior: "smooth", block: "center" })
-      );
-    }
-  }, [isTarget]);
 
   return (
     <div
-      ref={ref}
       className={`graph-embed-comment ${isTarget ? "graph-embed-comment--target" : ""}`}
     >
       <div className="graph-embed-comment-head">
@@ -1198,7 +1187,6 @@ export function GraphPage() {
         setEmbedUrl(node.permalink);
         setEmbedData(null);
         setSelectedPost(null);
-        setEmbedCollapsed(false);
         // Fetch full thread context
         const cleanPath = node.permalink.replace(/\/+$/, "");
         const commentId = node.id.replace("comment-", "");
@@ -1655,7 +1643,18 @@ export function GraphPage() {
             <div className="graph-preview-header-btns">
               <button
                 className="graph-preview-collapse-btn"
-                onClick={() => setEmbedCollapsed((c) => !c)}
+                onClick={() => {
+                  setEmbedCollapsed((c) => {
+                    if (c) {
+                      // Expanding — scroll to target comment after layout
+                      requestAnimationFrame(() => {
+                        const target = document.querySelector(".graph-embed-comment--target");
+                        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      });
+                    }
+                    return !c;
+                  });
+                }}
               >
                 {embedCollapsed ? "\u25B2" : "\u25BC"}
               </button>
