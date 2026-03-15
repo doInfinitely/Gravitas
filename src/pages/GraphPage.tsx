@@ -14,12 +14,9 @@ import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
 import {
   reddit,
-  auth,
-  post as postApi,
   getSavedSubreddits,
   saveSubreddits,
   type RedditComment,
-  type RedditUser,
 } from "../api";
 
 // ── Error Boundary ────────────────────────────────────────────────────
@@ -785,32 +782,13 @@ function PostPreviewPanel({
   comments,
   onClose,
   onOpenReddit,
-  isLoggedIn,
-  onReply,
 }: {
   post: GraphPost;
   comments: RedditComment[];
   onClose: () => void;
   onOpenReddit: () => void;
-  isLoggedIn: boolean;
-  onReply: (thingId: string, text: string) => void;
 }) {
-  const [replyTo, setReplyTo] = useState<string | null>(null);
-  const [replyText, setReplyText] = useState("");
-  const [sending, setSending] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
-
-  const handleSubmitReply = async () => {
-    if (!replyText.trim() || !replyTo) return;
-    setSending(true);
-    try {
-      onReply(replyTo, replyText);
-      setReplyTo(null);
-      setReplyText("");
-    } finally {
-      setSending(false);
-    }
-  };
 
   return (
     <div className={`graph-preview-panel ${collapsed ? "graph-preview-panel--collapsed" : ""}`}>
@@ -889,36 +867,7 @@ function PostPreviewPanel({
             <button className="graph-detail-reddit-btn" onClick={onOpenReddit}>
               Open on Reddit
             </button>
-            {isLoggedIn && (
-              <button
-                className="graph-preview-reply-btn"
-                onClick={() =>
-                  setReplyTo(replyTo ? null : `t3_${post.redditId}`)
-                }
-              >
-                {replyTo ? "Cancel" : "Reply"}
-              </button>
-            )}
           </div>
-
-          {replyTo && (
-            <div className="graph-preview-reply-form">
-              <textarea
-                className="graph-preview-reply-input"
-                placeholder="Write a comment..."
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                rows={3}
-              />
-              <button
-                className="graph-detail-reddit-btn"
-                onClick={handleSubmitReply}
-                disabled={sending || !replyText.trim()}
-              >
-                {sending ? "Sending..." : "Submit"}
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -965,24 +914,6 @@ export function GraphPage() {
     comments: ThreadedCommentItem[];
   } | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(() => auth.isLoggedIn());
-  const [redditUser, setRedditUser] = useState<RedditUser | null>(null);
-
-  // Handle OAuth callback on mount
-  useEffect(() => {
-    if (window.location.search.includes("code=")) {
-      auth.handleCallback().then((ok) => {
-        if (ok) {
-          setLoggedIn(true);
-          auth.getUser().then(setRedditUser).catch(() => {});
-        }
-        // Clean OAuth params from URL
-        window.history.replaceState({}, "", window.location.pathname);
-      });
-    } else if (loggedIn) {
-      auth.getUser().then(setRedditUser).catch(() => {});
-    }
-  }, []);
 
   // Simulation state
   const simRef = useRef<SimState>({ nodes: new Map(), edges: [] });
@@ -1363,17 +1294,6 @@ export function GraphPage() {
     return String(n);
   };
 
-  const handleReply = useCallback(
-    async (thingId: string, text: string) => {
-      try {
-        await postApi.comment(thingId, text);
-      } catch (err) {
-        console.error("Failed to post comment:", err);
-      }
-    },
-    []
-  );
-
   // Comments for selected post
   const selectedPostComments = selectedPost
     ? commentsByPost[selectedPost.key] ?? []
@@ -1459,33 +1379,6 @@ export function GraphPage() {
               </span>
             </div>
 
-            {/* Auth button */}
-            <div className="graph-auth">
-              {loggedIn ? (
-                <div className="graph-auth-user">
-                  <span className="graph-auth-name">
-                    u/{redditUser?.name ?? "..."}
-                  </span>
-                  <button
-                    className="graph-auth-btn graph-auth-btn--logout"
-                    onClick={() => {
-                      auth.logout();
-                      setLoggedIn(false);
-                      setRedditUser(null);
-                    }}
-                  >
-                    Logout
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="graph-auth-btn"
-                  onClick={() => auth.login()}
-                >
-                  Login with Reddit
-                </button>
-              )}
-            </div>
           </div>
 
           {/* Subreddit search + subscribe */}
@@ -1633,8 +1526,6 @@ export function GraphPage() {
               "_blank"
             )
           }
-          isLoggedIn={loggedIn}
-          onReply={handleReply}
         />
       )}
 
